@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="../WaySharp/WaySharp.csproj" />
+  <Project Path="WaySharpTest.csproj" />
+</Solution>

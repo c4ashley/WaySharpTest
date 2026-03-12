@@ -64,7 +64,7 @@ registry.Global += (name, itf, version) =>
 		} break;
 		case var v when v.Equals(Registry.GetInterfaceName<IXdgWmBase>()):
 			xdg = registry.Bind<IXdgWmBase>(name, 1);
-			Console.WriteLine($"XDG handle: 0x{((IWaylandInterface)xdg).Handle.DangerousGetHandle()}");
+			Console.WriteLine($"XDG handle: 0x{((IWaylandInterface)xdg).Handle}");
 			xdg.Ping += serial => xdg.Pong(serial);
 			break;
 		case var v when v.Equals(Registry.GetInterfaceName<IZwlrLayerShell>()):
@@ -108,13 +108,16 @@ layerSurface.SetExclusiveEdge(ShellAnchor.Top);
 surface.Commit();
 #else
 xdgSurface = xdg.GetXdgSurface(surface) ?? throw new Exception("XDG Surface is null");
-Console.WriteLine($"0x{xdgSurface.Handle.DangerousGetHandle():x}");
+Console.WriteLine($"0x{xdgSurface.Handle:x}");
 xdgSurface.Configured += serial => {
 	Console.WriteLine("XdgSurface configured");
 	xdgSurface.AckConfigure(serial);
 	var buffer = DrawFrame();
-	surface.Attach(buffer, 0, 0);
-	surface.Commit();
+	if (buffer is not null)
+	{
+		surface.Attach(buffer, 0, 0);
+		surface.Commit();
+	}
 };
 Console.WriteLine("Creating XDG toplevel");
 // xdgSurface events
@@ -124,28 +127,33 @@ topLevel.Closed += () => {
 };
 topLevel.Configured += (width_, height_, states_) =>
 {
-	width = width_;
-	height = height_;
+	width = Math.Max(width_, 100);
+	height = Math.Max(height_, 100);
 };
-Console.WriteLine("Setting title");
 topLevel.SetTitle("Example Client");
+topLevel.SetMinSize(100, 100);
 
 pointer.Motion += (_, x, y) =>
 {
 	Console.WriteLine($"({x}, {y})");
 	curX = x; curY = y;
 	var buffer = DrawFrame();
-	surface.Attach(buffer, 0, 0);
-	surface.DamageBuffer(4, 4, width, 100);
-	surface.Commit();
+	if (buffer is not null)
+	{
+		surface.Attach(buffer, 0, 0);
+		surface.DamageBuffer(4, 4, width, 100);
+		surface.Commit();
+	}
 };
 
 subsurface_surface = compositor.CreateSurface();
 subsurface = subcompositor.GetSubsurface(subsurface_surface, surface);
 subsurface.PlaceAbove(surface);
-var region = compositor.CreateRegion();
-region.Add(0, 0, int.MaxValue, int.MaxValue);
-subsurface_surface.SetOpaqueRegion(region);
+using (var region = compositor.CreateRegion())
+{
+	region.Add(0, 0, int.MaxValue, int.MaxValue);
+	subsurface_surface.SetOpaqueRegion(region);
+}
 int buttonWidth = 140, buttonHeight = 36;
 int buttonSizeBytes = buttonWidth * buttonHeight * 4;
 //Buffer buffer;
@@ -166,26 +174,38 @@ surface.Commit();
 
 Console.WriteLine("Running dispatch loop");
 
-while (running && display.Dispatch() != 0) {}
+while (running && display.Dispatch() != 0)
+{
+	display.Assert();
+}
+
+display.Assert();
+
 
 Buffer? DrawFrame()
 {
+	Console.WriteLine("DrawFrame");
+	if (width == 0 || height == 0)
+	{
+		Console.WriteLine("  Size=0, nothing to do.");
+		return null;
+	}
 	var stopwatch = Stopwatch.StartNew();
 	int w = width, h = height;
 	int stride = w * 4;
 	int size = stride * h;
-	using var shmFile = SharedMemory.Allocate(size);
-	Console.WriteLine($"SHM File: file={shmFile.File.Handle}, memory={shmFile.Memory:x}h, size={shmFile.Size}");
-	if (!shmFile.File.IsOpen)
-		return null;
+	//using var shmFile = SharedMemory.Allocate(size);
+	//Console.WriteLine($"SHM File: file={shmFile.File.Handle}, memory={shmFile.Memory:x}h, size={shmFile.Size}");
+	//if (!shmFile.File.IsOpen)
+	//	return null; 
 	Buffer buffer;
-	using (var pool = shm.CreatePool(shmFile.File, size))
+	using (var pool = shm.CreatePool(size * 2))
 	{
 		buffer = pool.CreateBuffer(0, w, h, stride, SharedMemoryFormat.XRGB8888);
 	}
 
 	var imageInfo = new SKImageInfo(w, h, SKColorType.Bgra8888, SKAlphaType.Premul);
-	using (var imageSurface = SKSurface.Create(imageInfo, shmFile.Memory, stride))
+	using (var imageSurface = SKSurface.Create(imageInfo, buffer.Pointer, stride))
 	{
 		SKCanvas canvas = imageSurface.Canvas;
 		canvas.Clear(SKColors.Transparent);
@@ -220,7 +240,7 @@ Buffer? DrawFrame()
 	//			Marshal.WriteInt32(shmFile.Memory, y * stride + x * 4, unchecked((int)0xFFEEEEEE));
 	//	}
 	//}
-	buffer.Released += delegate { buffer.Destroy(); };
+	buffer.Released += delegate { buffer.Dispose(); };
 	return buffer;
 }
 
